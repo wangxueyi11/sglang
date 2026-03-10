@@ -319,6 +319,9 @@ class Scheduler(
         self.spec_algorithm = SpeculativeAlgorithm.from_string(
             server_args.speculative_algorithm
         )
+        # Disable overlap for algorithms that don't support spec_v2
+        if self.spec_algorithm.is_ngram() or self.spec_algorithm.is_suffix():
+            self.enable_overlap = False
         self.gpu_id = gpu_id
         self.page_size = server_args.page_size
         self.enable_hierarchical_cache = server_args.enable_hierarchical_cache
@@ -905,7 +908,7 @@ class Scheduler(
             self.server_args.disaggregation_transfer_backend
         )
 
-        if self.draft_worker is None or self.spec_algorithm.is_ngram():
+        if self.draft_worker is None or self.spec_algorithm.is_ngram() or self.spec_algorithm.is_suffix():
             draft_token_to_kv_pool = None
         elif self.spec_algorithm.supports_spec_v2() and self.enable_overlap:
             if self.server_args.enable_multi_layer_eagle:

@@ -501,6 +501,13 @@ class ServerArgs:
     speculative_ngram_match_type: Literal["BFS", "PROB"] = "BFS"
     speculative_ngram_branch_length: int = 18
     speculative_ngram_capacity: int = 10 * 1000 * 1000
+    # For suffix decoding only
+    speculative_suffix_max_tree_depth: int = 24
+    speculative_suffix_max_cached_requests: int = 10000
+    speculative_suffix_max_spec_factor: float = 1.0
+    speculative_suffix_min_token_prob: float = 0.1
+    speculative_suffix_use_tree_spec: bool = False  # Enable tree-based speculation (top-k multi-path)
+    speculative_suffix_max_branch_factor: int = 3  # Max branches per level for tree speculation
     enable_multi_layer_eagle: bool = False
 
     # Expert parallelism
@@ -4349,7 +4356,7 @@ class ServerArgs:
         parser.add_argument(
             "--speculative-algorithm",
             type=str,
-            choices=["EAGLE", "EAGLE3", "NEXTN", "STANDALONE", "NGRAM"],
+            choices=["EAGLE", "EAGLE3", "NEXTN", "STANDALONE", "NGRAM", "SUFFIX"],
             help="Speculative algorithm.",
         )
         parser.add_argument(
@@ -4489,6 +4496,44 @@ class ServerArgs:
             type=int,
             default=ServerArgs.speculative_ngram_capacity,
             help="The cache capacity for ngram speculative decoding.",
+        )
+
+        # SUFFIX speculative decoding arguments
+        parser.add_argument(
+            "--speculative-suffix-max-tree-depth",
+            type=int,
+            default=ServerArgs.speculative_suffix_max_tree_depth,
+            help="The max tree depth for suffix speculative decoding.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-max-cached-requests",
+            type=int,
+            default=ServerArgs.speculative_suffix_max_cached_requests,
+            help="The max cached requests for suffix speculative decoding.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-max-spec-factor",
+            type=float,
+            default=ServerArgs.speculative_suffix_max_spec_factor,
+            help="The max spec factor for suffix speculative decoding.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-min-token-prob",
+            type=float,
+            default=ServerArgs.speculative_suffix_min_token_prob,
+            help="The min token probability for suffix speculative decoding.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-use-tree-spec",
+            action="store_true",
+            default=ServerArgs.speculative_suffix_use_tree_spec,
+            help="Use tree-based speculation for suffix decoding (top-k branches).",
+        )
+        parser.add_argument(
+            "--speculative-suffix-max-branch-factor",
+            type=int,
+            default=3,
+            help="Maximum number of branches to explore at each level for tree-based suffix speculation.",
         )
 
         # Multi-layer Eagle speculative decoding
