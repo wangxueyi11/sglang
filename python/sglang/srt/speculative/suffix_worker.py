@@ -31,6 +31,8 @@ class SuffixWorker(NGRAMWorker):
         tp_rank: int,
         dp_rank: Optional[int],
         moe_ep_rank: int,
+        attn_cp_rank: int,
+        moe_dp_rank: int,
         nccl_port: int,
         target_worker: TpModelWorker,
     ):
@@ -41,6 +43,8 @@ class SuffixWorker(NGRAMWorker):
             tp_rank,
             dp_rank,
             moe_ep_rank,
+            attn_cp_rank,
+            moe_dp_rank,
             nccl_port,
             target_worker,
         )
