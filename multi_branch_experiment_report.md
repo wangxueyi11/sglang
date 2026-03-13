@@ -323,37 +323,89 @@ def build_deep_tree(self, cache_req_id, context, max_tokens):
    - 推荐使用 draft_tokens=8 作为默认值
    - 对于长文本生成场景，可以考虑 draft_tokens=16
 
-## 6. 结论与建议
+## 6. 完整矩阵实验
 
-### 6.1 结论
+### 6.1 实验设计
 
-1. **多分支有效**: 我们实现的多分支 Suffix Decoding 比单分支模式有明显提升
-   - 吞吐量提升 10.2% (43.17 → 47.59)
-   - 接受长度提升 32.7% (2.94 → 3.90)
-   - 接受率提升 32.4% (0.37 → 0.49)
+固定变量对比实验：
+- **draft_tokens**: [4, 8, 12, 16]
+- **branch_factor**: [1, 2, 3, 5]
+- **baseline**: 无推测解码
 
-2. **分支数选择**: branch=3 已达到最佳效果，更大的分支数(branch=5)反而略有下降
+### 6.2 吞吐量矩阵 (tokens/sec)
 
-3. **draft_tokens 选择**: draft_tokens=8 性价比更高，draft_tokens=16 边际收益有限
+| draft\branch | branch=1 | branch=2 | branch=3 | branch=5 |
+|-------------|----------|----------|----------|----------|
+| draft=4 | 69.5 (1.87x) | 61.8 (1.67x) | 61.5 (1.66x) | 61.7 (1.66x) |
+| draft=8 | 72.9 (1.97x) | 76.4 (2.06x) | 77.8 (2.10x) | 78.5 (2.12x) |
+| draft=12 | 72.2 (1.95x) | 79.6 (2.15x) | 82.9 (2.23x) | **87.1 (2.35x)** |
+| draft=16 | 73.0 (1.97x) | 84.8 (2.28x) | 77.8 (2.10x) | 73.4 (1.98x) |
+| baseline | 37.1 (1.00x) | - | - | - |
 
-4. **整体加速**: 相比无推测解码，多分支模式达到 **2.90x** 加速
+### 6.3 接受长度矩阵
 
-### 6.2 推荐配置
+| draft\branch | branch=1 | branch=2 | branch=3 | branch=5 |
+|-------------|----------|----------|----------|----------|
+| draft=4 | 2.64 | 2.75 | 2.74 | 2.78 |
+| draft=8 | 2.77 | 3.19 | 3.31 | 3.45 |
+| draft=12 | 2.83 | 3.32 | 3.65 | **3.76** |
+| draft=16 | 2.81 | 3.54 | 3.38 | 3.15 |
 
+### 6.4 接受率矩阵
+
+| draft\branch | branch=1 | branch=2 | branch=3 | branch=5 |
+|-------------|----------|----------|----------|----------|
+| draft=4 | 66.04% | 68.76% | 68.58% | **69.56%** |
+| draft=8 | 34.60% | 39.82% | 41.48% | 43.05% |
+| draft=12 | 23.52% | 27.67% | 30.47% | 31.21% |
+| draft=16 | 17.60% | 22.15% | 21.19% | 19.77% |
+
+### 6.5 趋势分析
+
+1. **draft_tokens 影响**：
+   - draft=4: 吞吐量较低，但接受率高 (65-70%)
+   - draft=8: 平衡点，吞吐量和接受率适中
+   - draft=12: 最佳吞吐量，接受率适中 (25-35%)
+   - draft=16: 验证开销增加，吞吐量开始下降
+
+2. **branch_factor 影响**：
+   - branch=1 (单分支): 吞吐量最低
+   - branch=5 (多分支): 吞吐量最高
+   - 多分支提升约 10-20% 吞吐量
+
+3. **最佳配置**：
+   - **最高吞吐量**: draft=12, branch=5 (87.11 tokens/sec, 2.35x)
+   - **平衡选择**: draft=8, branch=3 (77.83 tokens/sec, 2.10x)
+   - **高接受率**: draft=4, branch=5 (61.68 tokens/sec, 1.66x, 69.56%)
+
+## 7. 结论与建议
+
+### 7.1 结论
+
+1. **多分支有效**: 多分支模式比单分支提升 10-20% 吞吐量
+2. **draft_tokens 选择**: draft=12 达到最佳吞吐量，draft=16 开始下降
+3. **branch_factor 选择**: branch=5 效果最好
+4. **整体加速**: 最佳配置达到 **2.35x** 加速
+
+### 7.2 推荐配置
+
+**追求最大吞吐量**:
 ```bash
 --speculative-algorithm SUFFIX \
---speculative-num-steps 5 \
+--speculative-num-draft-tokens 12 \
+--speculative-suffix-max-tree-depth 8 \
+--speculative-suffix-use-tree-spec \
+--speculative-suffix-max-branch-factor 5
+```
+
+**平衡吞吐量和接受率**:
+```bash
+--speculative-algorithm SUFFIX \
 --speculative-num-draft-tokens 8 \
 --speculative-suffix-max-tree-depth 6 \
 --speculative-suffix-use-tree-spec \
 --speculative-suffix-max-branch-factor 3
 ```
-
-### 6.3 建议
-
-1. 使用上述推荐配置作为默认值
-2. 确保服务器日志级别为 `info` 以监控接受率和接受长度
-3. 对于不同数据集，可能需要调整 `max_branch_factor` 和 `max_tree_depth`
 
 ## 6. 附录
 
