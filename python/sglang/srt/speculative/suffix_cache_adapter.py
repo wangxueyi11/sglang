@@ -8,24 +8,186 @@ This allows NGRAMWorker to use suffix decoding without modification.
 import logging
 import os
 from collections import deque, defaultdict
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Set
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
+class MultiBranchTreeBuilder:
+    """
+    真正的多分支树构建器
+    
+    ArcticInference 的 use_tree_spec=True 不返回多分支，
+    所以我们维护自己的分支缓存来构建真正的多分支树。
+    
+    工作原理：
+    1. 维护一个 n-gram 到后续 token 的映射
+    2. 当添加新的 token 序列时，更新这个映射
+    3. 在推测时，使用 BFS 构建多分支树
+    """
+    
+    def __init__(
+        self,
+        max_depth: int = 8,
+        max_branch_factor: int = 3,
+        ngram_size: int = 4,
+    ):
+        self.max_depth = max_depth
+        self.max_branch_factor = max_branch_factor
+        self.ngram_size = ngram_size
+        
+        # 核心：n-gram -> {token: count} 映射
+        # 记录每个 n-gram 后面可能出现的 token 及其频率
+        self._branches: Dict[tuple, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        
+        # 记录完整的 token 序列（用于深度匹配）
+        self._sequences: List[List[int]] = []
+        
+        # 统计
+        self._total_updates = 0
+    
+    def add_sequence(self, tokens: List[int]) -> None:
+        """添加一个 token 序列，更新分支缓存"""
+        if len(tokens) < 2:
+            return
+        
+        self._sequences.append(tokens.copy())
+        # 只保留最近的序列以节省内存
+        if len(self._sequences) > 10000:
+            self._sequences = self._sequences[-5000:]
+        
+        # 更新 n-gram 分支映射
+        for n in range(1, self.ngram_size + 1):
+            for i in range(len(tokens) - n):
+                ngram = tuple(tokens[i:i+n])
+                next_token = tokens[i+n]
+                self._branches[ngram][next_token] += 1
+        
+        self._total_updates += 1
+    
+    def get_branches(self, context: List[int], max_depth: int, max_branches: int) -> List[Tuple[int, float]]:
+        """
+        获取给定 context 后的所有可能分支
+        
+        返回: [(token, probability), ...]
+        """
+        branches = []
+        
+        # 尝试不同长度的 n-gram 匹配
+        for n in range(min(self.ngram_size, len(context)), 0, -1):
+            ngram = tuple(context[-n:])
+            if ngram in self._branches:
+                token_counts = self._branches[ngram]
+                total = sum(token_counts.values())
+                if total > 0:
+                    # 按频率排序
+                    sorted_tokens = sorted(token_counts.items(), key=lambda x: -x[1])
+                    for token, count in sorted_tokens[:max_branches]:
+                        prob = count / total
+                        branches.append((token, prob))
+                    break
+        
+        return branches
+    
+    def build_tree(
+        self,
+        context: List[int],
+        max_tokens: int,
+    ) -> Tuple[List[int], List[int], float]:
+        """
+        使用 BFS 构建多分支树
+        
+        返回:
+            token_ids: 树中的所有 token
+            parents: 每个 token 的父节点索引
+            score: 树的总分数
+        """
+        if max_tokens <= 0:
+            return [], [], 0.0
+        
+        token_ids = []
+        parents = []
+        total_score = 0.0
+        
+        # 获取根节点的分支
+        root_branches = self.get_branches(context, self.max_depth, self.max_branch_factor)
+        
+        if not root_branches:
+            return token_ids, parents, total_score
+        
+        # BFS 队列: (token, parent_idx, depth, cumulative_prob)
+        queue = deque()
+        
+        # 添加根节点的分支（多分支根节点）
+        used_at_root = set()
+        for token, prob in root_branches:
+            if token not in used_at_root and len(token_ids) < max_tokens:
+                current_idx = len(token_ids)
+                token_ids.append(token)
+                parents.append(-1)  # 根节点的父节点是 -1
+                total_score += prob
+                used_at_root.add(token)
+                # 加入队列继续探索：(当前token索引, 当前上下文, 深度, 累积概率)
+                queue.append((current_idx, context + [token], 1, prob))
+        
+        # BFS 探索 - 每个节点可以有多个子节点
+        visited_states = set()
+        
+        while queue and len(token_ids) < max_tokens:
+            parent_idx, ctx, depth, cum_prob = queue.popleft()
+            
+            if depth >= self.max_depth:
+                continue
+            
+            # 获取当前上下文的分支
+            branches = self.get_branches(ctx, self.max_depth - depth, self.max_branch_factor)
+            
+            if not branches:
+                continue
+            
+            # 为当前节点添加多个子节点（这是多分支的关键！）
+            used_tokens = set()
+            for token, prob in branches:
+                if len(token_ids) >= max_tokens:
+                    break
+                if token in used_tokens:
+                    continue
+                
+                # 检查是否已经处理过这个状态
+                state_key = (parent_idx, token)
+                if state_key in visited_states:
+                    continue
+                visited_states.add(state_key)
+                
+                used_tokens.add(token)
+                
+                # 添加新节点，其父节点是 parent_idx（不是最后一个节点！）
+                current_idx = len(token_ids)
+                token_ids.append(token)
+                parents.append(parent_idx)  # 正确设置父节点
+                total_score += prob * (0.9 ** depth)  # 深度衰减
+                
+                # 继续探索这个分支
+                queue.append((current_idx, ctx + [token], depth + 1, cum_prob * prob))
+        
+        return token_ids, parents, total_score
+    
+    def stats(self) -> dict:
+        """返回统计信息"""
+        return {
+            "total_updates": self._total_updates,
+            "total_ngrams": len(self._branches),
+            "total_sequences": len(self._sequences),
+        }
+
+
 class DeepTreeBuilder:
     """
-    Enhanced tree builder that leverages ArcticInference's use_tree_spec=True.
+    多分支树构建器包装类
     
-    Key insight from testing:
-    - When suffix tree has branches (multiple possible continuations),
-      use_tree_spec=True returns multiple ROOT nodes (parents = [-1, -1, ...])
-    - Each root represents a different continuation path
-    - The returned structure already encodes the tree via parents array
-    
-    This class simply wraps use_tree_spec=True and provides fallback.
+    结合 ArcticInference 的推测和本地分支缓存来构建多分支树
     """
     
     def __init__(
@@ -43,6 +205,17 @@ class DeepTreeBuilder:
         self.min_token_prob = min_token_prob
         self.max_spec_factor = max_spec_factor
         self.max_tree_depth = max_tree_depth
+        
+        # 本地分支缓存
+        self.branch_cache = MultiBranchTreeBuilder(
+            max_depth=max_depth,
+            max_branch_factor=max_branch_factor,
+            ngram_size=min(6, max_tree_depth),
+        )
+    
+    def add_sequence(self, tokens: List[int]) -> None:
+        """添加 token 序列到分支缓存"""
+        self.branch_cache.add_sequence(tokens)
     
     def build_deep_tree(
         self,
@@ -51,47 +224,90 @@ class DeepTreeBuilder:
         max_tokens: int,
     ) -> Tuple[List[int], List[int], float]:
         """
-        Build a speculation tree using ArcticInference's tree mode.
+        构建多分支推测树
         
-        Returns:
-            token_ids: List of tokens in the tree
-            parents: Parent indices for each token (-1 for root)
-            score: Total score of the tree
+        策略：
+        1. 先尝试使用本地分支缓存构建多分支树
+        2. 如果本地缓存数据不足，则使用 ArcticInference 的单路径
+        3. 如果两者都有数据，选择更好的结果
         """
-        token_ids = []
-        parents = []
-        total_score = 0.0
-        
         if max_tokens <= 0:
-            return token_ids, parents, total_score
+            return [], [], 0.0
         
-        # Get draft with tree structure from ArcticInference
-        draft = self.suffix_cache.speculate(
+        # 1. 使用本地分支缓存构建多分支树
+        local_tokens, local_parents, local_score = self.branch_cache.build_tree(
+            context, max_tokens
+        )
+        
+        # 分析本地树结构
+        from collections import Counter
+        parent_counts = Counter(local_parents)
+        multi_child = {p: c for p, c in parent_counts.items() if c > 1}
+        root_count = sum(1 for p in local_parents if p == -1)
+        
+        branch_stats = self.branch_cache.stats()
+        
+        # 如果本地树有足够的分支（至少2个根分支或多子节点），直接使用
+        if root_count >= 2 or len(multi_child) > 0:
+            logger.warning(
+                "[MULTI-BRANCH] Using local multi-branch tree: "
+                "tokens=%d, roots=%d, multi_child_parents=%s, ngrams=%d",
+                len(local_tokens), root_count, multi_child, branch_stats["total_ngrams"]
+            )
+            return local_tokens, local_parents, local_score
+        
+        # 2. 获取 ArcticInference 的主路径作为补充
+        main_draft = self.suffix_cache.speculate(
             cache_req_id,
             context,
             max_spec_tokens=max_tokens,
             max_spec_factor=self.max_spec_factor,
             min_token_prob=self.min_token_prob,
-            use_tree_spec=True,
+            use_tree_spec=False,
         )
         
-        # If empty, try single-path fallback
-        if not draft.token_ids:
-            draft = self.suffix_cache.speculate(
-                cache_req_id,
-                context,
-                max_spec_tokens=max_tokens,
-                max_spec_factor=self.max_spec_factor,
-                min_token_prob=self.min_token_prob,
-                use_tree_spec=False,
+        main_tokens = list(main_draft.token_ids) if main_draft.token_ids else []
+        main_score = main_draft.score if hasattr(main_draft, 'score') else 0.0
+        
+        # 3. 决定使用哪个结果
+        # 如果本地树有数据但分支不够多，仍然使用（因为可能有更好的匹配）
+        if len(local_tokens) > 0:
+            logger.warning(
+                "[MULTI-BRANCH] Using local tree (limited branches): "
+                "tokens=%d, roots=%d, ngrams=%d",
+                len(local_tokens), root_count, branch_stats["total_ngrams"]
             )
+            return local_tokens, local_parents, local_score
         
-        if draft.token_ids:
-            token_ids = list(draft.token_ids)
-            parents = list(draft.parents) if draft.parents else [-1] + list(range(len(draft.token_ids) - 1))
-            total_score = draft.score if hasattr(draft, 'score') else 1.0
+        # 使用 ArcticInference 的单路径
+        if main_tokens:
+            parents = [-1] + list(range(len(main_tokens) - 1))
+            logger.warning(
+                "[SUFFIX SINGLE] Using ArcticInference path: tokens=%d, score=%.3f",
+                len(main_tokens), main_score
+            )
+            return main_tokens, parents, main_score
         
-        return token_ids, parents, total_score
+        return [], [], 0.0
+    
+    def _compute_depth(self, parents: List[int]) -> int:
+        """计算树的最大深度"""
+        if not parents:
+            return 0
+        depths = {}
+        def get_depth(i):
+            if i in depths:
+                return depths[i]
+            if parents[i] == -1:
+                depths[i] = 1
+            else:
+                depths[i] = get_depth(parents[i]) + 1
+            return depths[i]
+        
+        max_depth = 0
+        for i in range(len(parents)):
+            max_depth = max(max_depth, get_depth(i))
+        return max_depth
 
 
 class SuffixCacheAdapter:
@@ -127,9 +343,7 @@ class SuffixCacheAdapter:
             max_cached_requests: Maximum number of cached requests
             max_spec_factor: Maximum speculation factor
             min_token_prob: Minimum token probability threshold
-            use_tree_spec: If True, use DEEP tree-based speculation.
-                           This builds a depth-first tree where main branches
-                           go deep and alternative branches are kept as backup.
+            use_tree_spec: If True, use multi-branch tree speculation.
             max_branch_factor: Max number of branches to explore at each level
         """
         # Lazy import to avoid error when Suffix Decoding is not used
@@ -175,7 +389,7 @@ class SuffixCacheAdapter:
             dtype=bool,
         )
 
-    def _cleanup_inactive_requests(self, active_req_ids: set[str]):
+    def _cleanup_inactive_requests(self, active_req_ids: set):
         """Stop backend requests that are no longer active in SGlang."""
         inactive_req_ids = [
             rid for rid in self.req_state.keys() if rid not in active_req_ids
@@ -207,6 +421,10 @@ class SuffixCacheAdapter:
             # Track: [arctic_req_id, last_length]
             # IMPORTANT: Set last_length to prompt length since the backend already has the prompt
             self.req_state[sglang_req_id] = [cache_req_id, len(prompt)]
+
+            # 添加 prompt 到分支缓存
+            if self.deep_tree_builder:
+                self.deep_tree_builder.add_sequence(prompt)
 
         cache_req_id, last_length = self.req_state[sglang_req_id]
         return cache_req_id, last_length
@@ -265,10 +483,10 @@ class SuffixCacheAdapter:
                     self.suffix_cache.add_active_response(cache_req_id, new_tokens)
                     self.req_state[sglang_req_id][1] = current_length
                     last_length = current_length
-                else:
-                    logger.warning(
-                        f"[BATCH_GET {idx}] Suffix cache req {cache_req_id} not active when updating!"
-                    )
+                    
+                    # 添加新 tokens 到分支缓存
+                    if self.deep_tree_builder:
+                        self.deep_tree_builder.add_sequence(tokens)
 
             # Extract pattern from end of tokens (up to max_tree_depth)
             pattern_start = max(0, len(tokens) - self.max_tree_depth)
@@ -276,23 +494,29 @@ class SuffixCacheAdapter:
 
             # Speculate using suffix cache
             if self.use_tree_spec and self.deep_tree_builder is not None:
-                # Use DEEP tree speculation: builds a depth-first tree
-                # This is superior to ArcticInference's shallow tree
+                # 使用多分支树构建
                 draft_ids, draft_parents, score = self.deep_tree_builder.build_deep_tree(
                     cache_req_id,
                     pattern,
                     max_tokens=self.draft_token_num,
                 )
-                if self.debug_tree_dump_remaining > 0:
-                    logger.warning(
-                        "[SUFFIX DEBUG DEEP TREE] tokens=%d, max_depth=%d, "
-                        "token_ids=%s, parents=%s, score=%.3f",
-                        len(draft_ids),
-                        self._compute_max_depth(draft_parents),
-                        draft_ids[:10],
-                        draft_parents[:10],
-                        score,
-                    )
+                
+                # 分析树结构
+                children_count = {}
+                for i in range(len(draft_parents)):
+                    p = draft_parents[i]
+                    if p >= 0 and p < len(draft_parents):
+                        children_count[p] = children_count.get(p, 0) + 1
+                max_branches = max(children_count.values()) if children_count else 0
+                tree_depth = self._compute_max_depth(draft_parents)
+                
+                logger.warning(
+                    "[SUFFIX DEBUG DEEP TREE] use_tree_spec=%s, max_branch_factor=%d, "
+                    "tokens=%d, depth=%d, max_branches=%d, parents=%s",
+                    self.use_tree_spec, self.max_branch_factor,
+                    len(draft_ids), tree_depth, max_branches,
+                    draft_parents[:20] if len(draft_parents) > 20 else draft_parents,
+                )
             else:
                 # Use single-path speculation
                 draft = self.suffix_cache.speculate(
@@ -343,244 +567,119 @@ class SuffixCacheAdapter:
             mask = mask_view[idx]
             if original_draft_len > 0:
                 for i in range(original_draft_len):
-                    mask[i, i] = True  # Self-attention
-                    parent_idx = draft_parents[i]
-                    while parent_idx >= 0 and parent_idx < self.draft_token_num:
-                        mask[i, parent_idx] = True
-                        parent_idx = draft_parents[parent_idx]
+                    # Token can attend to itself
+                    mask[i, i] = True
+                    # And to all ancestors
+                    p = draft_parents[i]
+                    while p >= 0 and p < self.draft_token_num:
+                        mask[i, p] = True
+                        p = draft_parents[p] if p < len(draft_parents) else -1
 
-            if self.debug_tree_dump_remaining > 0 and original_draft_len > 0:
-                logger.warning(
-                    "[SUFFIX DEBUG] req=%s, original_draft_len=%d, masked_len=%d, draft_ids=%s",
-                    sglang_req_id,
-                    original_draft_len,
-                    len(draft_ids),
-                    draft_ids,
-                )
-                logger.warning(
-                    "[SUFFIX DEBUG] mask=\n%s",
-                    mask.astype(int),
-                )
-                self.debug_tree_dump_remaining -= 1
+        return draft_view, mask_view.flatten()
 
-        tree_mask = mask_view.reshape(-1)[: total_draft_tokens * self.draft_token_num]
-
-        return draft_view, tree_mask
-
-    def batch_put(
-        self,
-        batch_req_ids: List[str],
-        batch_tokens: List[List[int]],
-        batch_prompts: Optional[List[List[int]]] = None,
-    ):
-        """
-        Update the global cache with verified tokens.
-
-        This method is called in two scenarios:
-        1. After normal speculative decoding verification (tokens already updated via batch_get)
-        2. When speculative decoding is disabled due to batch size threshold (need to update cache)
-        3. External cache update from other instances (need full prompt + response)
-
+    def batch_put(self, batch_req_ids: List[str], batch_tokens: List[List[int]]) -> None:
+        """Update cache with verified tokens.
+        
         Args:
-            batch_req_ids: List of request IDs
-            batch_tokens: List of full token sequences (prompt + response for external update,
-                          or just the updated portion for internal update)
-            batch_prompts: Optional list of prompt-only sequences. Required when updating
-                          cache for requests that are not currently active (external update
-                          or spec disabled from start). If None, tokens are treated as
-                          continuation of existing requests.
+            batch_req_ids: List of request IDs (not used by suffix cache)
+            batch_tokens: List of full token sequences (prompt + output)
         """
-        # Cleanup requests that are no longer active in the current batch
-        # This is important when speculative decoding is disabled, as batch_get won't be called
-        active_req_ids = set(batch_req_ids)
-        self._cleanup_inactive_requests(active_req_ids)
+        # Tokens are already added in batch_get via add_active_response
+        # But we can add them to the branch cache for future speculation
+        if self.deep_tree_builder:
+            for tokens in batch_tokens:
+                self.deep_tree_builder.add_sequence(tokens)
 
-        for idx, (sglang_req_id, tokens) in enumerate(
-            zip(batch_req_ids, batch_tokens)
-        ):
-            if not tokens:
-                continue
-
-            # Check if this request is already being tracked (normal spec flow)
-            if sglang_req_id in self.req_state:
-                cache_req_id, last_length = self.req_state[sglang_req_id]
-                current_length = len(tokens)
-
-                # If we have new tokens to add (normal spec flow)
-                if current_length > last_length:
-                    new_tokens = tokens[last_length:current_length]
-                    if cache_req_id in self.suffix_cache.active_requests:
-                        # Update via add_active_response for active requests (incremental update)
-                        self.suffix_cache.add_active_response(cache_req_id, new_tokens)
-                        self.req_state[sglang_req_id][1] = current_length
-                    else:
-                        # Request is not active anymore, need to re-add to cache
-                        # Use prompt if provided, otherwise use the tokens as both prompt and response
-                        if batch_prompts is not None and idx < len(batch_prompts):
-                            prompt = batch_prompts[idx]
-                            response = tokens[len(prompt):] if len(tokens) > len(prompt) else []
-                        else:
-                            # Fallback: treat all tokens as prompt, no response
-                            prompt = tokens
-                            response = []
-
-                        self._add_completed_request_to_cache(
-                            sglang_req_id, prompt, response
-                        )
-                        self.req_state.pop(sglang_req_id, None)
-            else:
-                # Request not tracked (spec was disabled from start, or external update)
-                # Need prompt to properly add to cache
-                if batch_prompts is not None and idx < len(batch_prompts):
-                    prompt = batch_prompts[idx]
-                    response = tokens[len(prompt):] if len(tokens) > len(prompt) else []
-                else:
-                    # Fallback: treat all tokens as prompt (less effective but still works)
-                    prompt = tokens
-                    response = []
-
-                self._add_completed_request_to_cache(sglang_req_id, prompt, response)
-
-    def _add_completed_request_to_cache(self, req_id: str, prompt: List[int],
-                                        response: List[int]):
-        """
-        Add a completed request's tokens to the global cache.
-
-        This uses the standard flow: start_request -> add_active_response -> stop_request
-        to properly cache the prompt + response in the global suffix tree.
-        """
-        try:
-            # Start the request (adds prompt to local tree and allocates slot in global tree)
-            self.suffix_cache.start_request(req_id, prompt)
-
-            # Add response tokens (updates both local and global tree)
-            if response:
-                self.suffix_cache.add_active_response(req_id, response)
-
-            # Stop the request (removes from local tree, keeps in global tree)
-            self.suffix_cache.stop_request(req_id)
-        except ValueError as e:
-            # Handle case where request might already be cached or active
-            if "already active" in str(e):
-                # Request is already active, try to add response and stop
-                try:
-                    if response:
-                        self.suffix_cache.add_active_response(req_id, response)
-                    self.suffix_cache.stop_request(req_id)
-                except ValueError:
-                    pass  # Ignore errors in cleanup
-            elif "already cached" in str(e) or "not active" in str(e):
-                # Try to evict and re-add
-                try:
-                    if req_id in self.suffix_cache.cached_requests:
-                        self.suffix_cache.evict_cached_response(req_id)
-                    self._add_completed_request_to_cache(
-                        req_id, prompt, response)
-                except ValueError:
-                    pass  # Ignore errors in retry
-
-    def synchronize(self):
+    def synchronize(self) -> None:
         """No-op for suffix cache (no async operations)."""
         pass
 
-    def reset(self):
+    def reset(self) -> None:
         """Clear all cached data."""
-        # Stop all active requests
-        for cache_req_id in list(self.suffix_cache.active_requests):
-            self.suffix_cache.stop_request(cache_req_id)
-        # Clear tracking
+        self.suffix_cache = type(self.suffix_cache)(
+            max_tree_depth=self.max_tree_depth,
+        )
         self.req_state.clear()
-        logger.info("[SUFFIX ADAPTER] Cache reset")
-
-    def _reorder_tree_bfs(
-        self, token_ids: List[int], parents: List[Optional[int]]
-    ) -> Tuple[List[int], List[int]]:
-        """
-        Reorder nodes so parents always precede their descendants.
-
-        reconstruct_indices_from_tree_mask assumes this layout; the backend emits
-        score-ordered nodes, so we re-topologize the list before building masks.
-        """
-        n = len(token_ids)
-        if n <= 1:
-            return token_ids, parents
-
-        children: List[List[int]] = [[] for _ in range(n)]
-        roots: List[int] = []
-        for idx, parent in enumerate(parents):
-            if parent is None or parent < 0 or parent >= n:
-                roots.append(idx)
-            else:
-                children[parent].append(idx)
-
-        if not roots:
-            roots = [0]
-
-        order: List[int] = []
-        visited = [False] * n
-        for root in roots:
-            if visited[root]:
-                continue
-            queue = deque([root])
-            while queue:
-                node = queue.popleft()
-                if visited[node]:
-                    continue
-                visited[node] = True
-                order.append(node)
-                for child in children[node]:
-                    if not visited[child]:
-                        queue.append(child)
-
-        # Append any detached nodes (should not happen, but keep deterministic order).
-        for idx in range(n):
-            if not visited[idx]:
-                order.append(idx)
-
-        if order == list(range(n)):
-            return token_ids, parents
-
-        remap = {old_idx: new_idx for new_idx, old_idx in enumerate(order)}
-        reordered_ids = [token_ids[old_idx] for old_idx in order]
-        reordered_parents: List[int] = []
-        for old_idx in order:
-            parent = parents[old_idx]
-            if parent is None or parent < 0:
-                reordered_parents.append(-1)
-            else:
-                reordered_parents.append(remap.get(parent, -1))
-
-        return reordered_ids, reordered_parents
-
-    def _inject_root_node(
-        self, token_ids: List[int], parents: List[int], context_token: int
-    ) -> Tuple[List[int], List[int]]:
-        """
-        Insert the latest verified token as index 0 so the layout matches NGRAM.
-        """
-        rooted_ids = [context_token]
-        rooted_parents = [-1]
-        for parent_idx in parents:
-            if parent_idx < 0:
-                rooted_parents.append(0)
-            else:
-                rooted_parents.append(parent_idx + 1)
-        rooted_ids.extend(token_ids)
-        return rooted_ids, rooted_parents
+        if self.deep_tree_builder:
+            self.deep_tree_builder.branch_cache = MultiBranchTreeBuilder(
+                max_depth=self.draft_token_num,
+                max_branch_factor=self.max_branch_factor,
+            )
 
     def _compute_max_depth(self, parents: List[int]) -> int:
         """Compute the maximum depth of the tree."""
         if not parents:
             return 0
         
-        def get_depth(i, visited=None):
-            if visited is None:
-                visited = set()
-            if i in visited or i < 0 or i >= len(parents):
-                return 0
-            visited.add(i)
-            if parents[i] < 0:
-                return 1
-            return 1 + get_depth(parents[i], visited)
+        depths = {}
+        def get_depth(i: int) -> int:
+            if i in depths:
+                return depths[i]
+            if parents[i] == -1:
+                depths[i] = 1
+            else:
+                depths[i] = get_depth(parents[i]) + 1
+            return depths[i]
         
-        return max(get_depth(i) for i in range(len(parents)))
+        max_depth = 0
+        for i in range(len(parents)):
+            max_depth = max(max_depth, get_depth(i))
+        return max_depth
+
+    def _reorder_tree_bfs(
+        self, token_ids: List[int], parents: List[int]
+    ) -> Tuple[List[int], List[int]]:
+        """Reorder tree in BFS order for efficient verification."""
+        if not token_ids:
+            return token_ids, parents
+
+        # Build adjacency list
+        children = defaultdict(list)
+        for i, p in enumerate(parents):
+            children[p].append(i)
+
+        # BFS traversal
+        new_ids = []
+        new_parents = []
+        old_to_new = {}
+        queue = deque(children[-1])  # Start with root children
+
+        while queue:
+            old_idx = queue.popleft()
+            old_to_new[old_idx] = len(new_ids)
+            new_ids.append(token_ids[old_idx])
+
+            # Add children to queue
+            for child in children.get(old_idx, []):
+                queue.append(child)
+
+        # Compute new parent indices
+        for old_idx in range(len(token_ids)):
+            if old_idx in old_to_new:
+                new_idx = old_to_new[old_idx]
+                old_parent = parents[old_idx]
+                if old_parent == -1:
+                    new_parents.append(-1)
+                elif old_parent in old_to_new:
+                    new_parents.append(old_to_new[old_parent])
+                else:
+                    new_parents.append(-1)
+
+        return new_ids, new_parents
+
+    def _inject_root_node(
+        self, token_ids: List[int], parents: List[int], context_token: int
+    ) -> Tuple[List[int], List[int]]:
+        """Inject a root node containing the context token."""
+        if not token_ids:
+            return [context_token], [-1]
+
+        # Check if root already exists with context_token
+        roots = [i for i, p in enumerate(parents) if p == -1]
+        if len(roots) == 1 and token_ids[roots[0]] == context_token:
+            return token_ids, parents
+
+        # Inject context_token as new root
+        new_ids = [context_token] + list(token_ids)
+        new_parents = [-1] + [0 if p == -1 else p + 1 for p in parents]
+        return new_ids, new_parents
