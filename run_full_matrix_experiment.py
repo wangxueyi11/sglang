@@ -400,14 +400,7 @@ def save_results(results: List[Dict], output_file: str):
 
 
 def print_final_results(results: List[Dict]):
-    """打印最终结果表格"""
-    print("\n" + "=" * 120)
-    print("实验结果汇总")
-    print("=" * 120)
-    
-    header = f"{'配置':<20} {'吞吐量':>12} {'TTFT':>10} {'解码时间':>10} {'接受长度':>10} {'接受率':>10} {'树节点':>10} {'分支数':>10}"
-    print(header)
-    print("-" * 120)
+    """打印最终结果表格 - 突出平均接受长度作为核心指标"""
     
     baseline_throughput = None
     for r in results:
@@ -415,26 +408,128 @@ def print_final_results(results: List[Dict]):
             baseline_throughput = r.get("throughput", 0)
             break
     
-    for r in results:
+    # 表1: 主要指标（吞吐量、加速比、接受长度）
+    print("\n" + "=" * 80)
+    print("主要指标对比（按吞吐量排序）")
+    print("=" * 80)
+    
+    header = f"{'配置':<25} {'吞吐量':>10} {'加速比':>10} {'接受长度':>10} {'接受率':>10}"
+    print(header)
+    print("-" * 80)
+    
+    # 按吞吐量排序（排除 baseline）
+    speculative_results = [r for r in results if r.get("config_name") != "baseline"]
+    speculative_results.sort(key=lambda x: x.get("throughput", 0), reverse=True)
+    
+    for r in speculative_results:
         name = r.get("config_name", "N/A")
         throughput = r.get("throughput", 0)
-        ttft = r.get("avg_ttft", 0)
-        decode_time = r.get("avg_decode_time", 0)
-        accept_len = r.get("accept_len") or "N/A"
-        accept_rate = r.get("accept_rate") or "N/A"
-        tree_tokens = r.get("avg_tree_tokens") or "N/A"
-        tree_roots = r.get("avg_tree_roots") or "N/A"
+        accept_len = r.get("accept_len") or 0
+        accept_rate = r.get("accept_rate") or 0
         
-        # 计算加速比
-        if baseline_throughput and baseline_throughput > 0 and throughput > 0:
+        if baseline_throughput and baseline_throughput > 0:
             speedup = throughput / baseline_throughput
-            name_with_speedup = f"{name} ({speedup:.2f}x)"
         else:
-            name_with_speedup = name
+            speedup = 0
         
-        print(f"{name_with_speedup:<20} {throughput:>12.2f} {ttft:>10.4f} {decode_time:>10.4f} {str(accept_len):>10} {str(accept_rate):>10} {str(tree_tokens):>10} {str(tree_roots):>10}")
+        print(f"{name:<25} {throughput:>10.1f} {speedup:>10.2f}x {accept_len:>10.2f} {accept_rate*100:>9.1f}%")
     
-    print("=" * 120)
+    print("=" * 80)
+    
+    # 表2: 矩阵视图
+    print("\n" + "=" * 80)
+    print("吞吐量矩阵 (tokens/sec) - draft_tokens × branch_factor")
+    print("=" * 80)
+    
+    # 提取 draft 和 branch 选项
+    draft_options = sorted(set(r.get("draft_tokens", 0) for r in speculative_results if r.get("draft_tokens")))
+    branch_options = sorted(set(r.get("branch_factor", 0) for r in speculative_results if r.get("branch_factor")))
+    
+    # 打印表头
+    header = f"{'draft\\branch':<12}"
+    for b in branch_options:
+        header += f"{'branch=' + str(b):>12}"
+    print(header)
+    print("-" * (12 + 12 * len(branch_options)))
+    
+    # 打印数据行
+    for d in draft_options:
+        row = f"{'draft=' + str(d):<12}"
+        for b in branch_options:
+            r = next((x for x in speculative_results 
+                     if x.get("draft_tokens") == d and x.get("branch_factor") == b), None)
+            if r:
+                throughput = r.get("throughput", 0)
+                speedup = throughput / baseline_throughput if baseline_throughput else 0
+                row += f"{throughput:>8.1f} ({speedup:.2f}x)"
+            else:
+                row += f"{'N/A':>12}"
+        print(row)
+    
+    print()
+    
+    # 表3: 平均接受长度矩阵
+    print("=" * 80)
+    print("平均接受长度矩阵 - draft_tokens × branch_factor")
+    print("=" * 80)
+    
+    header = f"{'draft\\branch':<12}"
+    for b in branch_options:
+        header += f"{'branch=' + str(b):>12}"
+    print(header)
+    print("-" * (12 + 12 * len(branch_options)))
+    
+    for d in draft_options:
+        row = f"{'draft=' + str(d):<12}"
+        for b in branch_options:
+            r = next((x for x in speculative_results 
+                     if x.get("draft_tokens") == d and x.get("branch_factor") == b), None)
+            if r and r.get("accept_len"):
+                row += f"{r.get('accept_len'):>12.2f}"
+            else:
+                row += f"{'N/A':>12}"
+        print(row)
+    
+    print()
+    
+    # 关键发现
+    print("=" * 80)
+    print("关键发现")
+    print("=" * 80)
+    
+    if speculative_results:
+        best = speculative_results[0]  # 已按吞吐量排序
+        best_throughput = best.get("throughput", 0)
+        best_speedup = best_throughput / baseline_throughput if baseline_throughput else 0
+        best_accept_len = best.get("accept_len", 0)
+        
+        print(f"最佳配置: {best.get('config_name')}")
+        print(f"  - 吞吐量: {best_throughput:.1f} tokens/sec ({best_speedup:.2f}x)")
+        print(f"  - 平均接受长度: {best_accept_len:.2f}")
+        
+        # 分析多分支收益
+        print("\n多分支收益分析:")
+        for d in draft_options:
+            single_branch = next((r for r in speculative_results 
+                                 if r.get("draft_tokens") == d and r.get("branch_factor") == 1), None)
+            multi_branch = [r for r in speculative_results 
+                          if r.get("draft_tokens") == d and r.get("branch_factor", 1) > 1]
+            
+            if single_branch and multi_branch:
+                single_throughput = single_branch.get("throughput", 0)
+                best_multi = max(multi_branch, key=lambda x: x.get("throughput", 0))
+                multi_throughput = best_multi.get("throughput", 0)
+                improvement = (multi_throughput - single_throughput) / single_throughput * 100
+                
+                single_accept = single_branch.get("accept_len", 0)
+                multi_accept = best_multi.get("accept_len", 0)
+                accept_improvement = (multi_accept - single_accept) / single_accept * 100 if single_accept > 0 else 0
+                
+                print(f"  draft={d}: 多分支最佳吞吐量提升 {improvement:+.1f}%, "
+                      f"接受长度提升 {accept_improvement:+.1f}% "
+                      f"(branch={best_multi.get('branch_factor')})")
+    
+    print("=" * 80)
 
 
 if __name__ == "__main__":
