@@ -1,0 +1,42 @@
+[
+  {
+    "config": "baseline_no_spec",
+    "successful_requests": 50,
+    "total_tokens": 4791,
+    "throughput_tokens_per_sec": 32.36,
+    "avg_latency_sec": 2.96,
+    "avg_tokens_per_request": 95.8,
+    "avg_branches": 0,
+    "multi_branch_count": 0
+  },
+  {
+    "config": "single_path",
+    "successful_requests": 50,
+    "total_tokens": 4779,
+    "throughput_tokens_per_sec": 72.78,
+    "avg_latency_sec": 1.31,
+    "avg_tokens_per_request": 95.6,
+    "avg_branches": 0,
+    "multi_branch_count": 0
+  },
+  {
+    "config": "multi_branch_3",
+    "successful_requests": 50,
+    "total_tokens": 4793,
+    "throughput_tokens_per_sec": 80.78,
+    "avg_latency_sec": 1.19,
+    "avg_tokens_per_request": 95.9,
+    "avg_branches": 1.6,
+    "multi_branch_count": 3148
+  },
+  {
+    "config": "multi_branch_5",
+    "successful_requests": 50,
+    "total_tokens": 4819,
+    "throughput_tokens_per_sec": 79.31,
+    "avg_latency_sec": 1.22,
+    "avg_tokens_per_request": 96.4,
+    "avg_branches": 1.77,
+    "multi_branch_count": 3340
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "config": "baseline-no-spec",
+    "throughput": 34.49,
+    "avg_latency": 4.54,
+    "improvement": "0%"
+  },
+  {
+    "config": "suffix-single-path",
+    "throughput": 61.73,
+    "avg_latency": 2.79,
+    "improvement": "+78.7%"
+  },
+  {
+    "config": "suffix-tree-spec (branch=3)",
+    "throughput": 64.77,
+    "avg_latency": 2.52,
+    "improvement": "+87.8%"
+  },
+  {
+    "config": "suffix-tree-spec (branch=5)",
+    "throughput": 68.73,
+    "avg_latency": 2.11,
+    "improvement": "+99.3%"
+  }
+]

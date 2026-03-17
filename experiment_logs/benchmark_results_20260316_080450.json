@@ -1,0 +1,18 @@
+[
+  {
+    "config_name": "single_branch",
+    "use_tree_spec": false,
+    "max_branch_factor": 1,
+    "throughput": null,
+    "latency_mean": null,
+    "latency_median": null
+  },
+  {
+    "config_name": "multi_branch_3",
+    "use_tree_spec": true,
+    "max_branch_factor": 3,
+    "throughput": null,
+    "latency_mean": null,
+    "latency_median": null
+  }
+]

@@ -670,16 +670,49 @@ class SuffixCacheAdapter:
     def _inject_root_node(
         self, token_ids: List[int], parents: List[int], context_token: int
     ) -> Tuple[List[int], List[int]]:
-        """Inject a root node containing the context token."""
+        """Inject a root node containing the context token.
+        
+        This method ensures context_token becomes the single root of the tree.
+        All original roots become children of the new context_token root.
+        This is necessary for proper tree verification where the first token
+        must match the last verified token.
+        
+        Args:
+            token_ids: List of draft token IDs
+            parents: Parent indices for each token (-1 for root)
+            context_token: The last verified token to use as root
+            
+        Returns:
+            Updated (token_ids, parents) with context_token as root
+        """
         if not token_ids:
             return [context_token], [-1]
 
-        # Check if root already exists with context_token
+        # Find all root nodes
         roots = [i for i, p in enumerate(parents) if p == -1]
+        
+        # Case 1: Single root with context_token - no change needed
         if len(roots) == 1 and token_ids[roots[0]] == context_token:
             return token_ids, parents
-
-        # Inject context_token as new root
+        
+        # Case 2: Check if one of multiple roots is context_token
+        if len(roots) > 1:
+            for root_idx in roots:
+                if token_ids[root_idx] == context_token:
+                    # context_token already exists as a root, use it as the single root
+                    # and make other roots its children (for consistent tree structure)
+                    # This preserves multi-branch: all roots become siblings under context_token
+                    pass  # Fall through to inject context_token as parent of all roots
+        
+        # Inject context_token as the single root
+        # All original roots become children of context_token
         new_ids = [context_token] + list(token_ids)
-        new_parents = [-1] + [0 if p == -1 else p + 1 for p in parents]
+        new_parents = [-1]  # context_token is the new root
+        for p in parents:
+            if p == -1:
+                # Original roots become children of new root (index 0)
+                new_parents.append(0)
+            else:
+                # Non-root nodes: parent index shifts by 1
+                new_parents.append(p + 1)
         return new_ids, new_parents

@@ -1,0 +1,140 @@
+[
+  {
+    "name": "no_tree",
+    "use_tree_spec": false,
+    "branch_factor": 1,
+    "total_tokens": 1258,
+    "total_time": 29.593770503997803,
+    "num_requests": 20,
+    "throughput": 42.50894626049958,
+    "avg_latency": 1.4796539425849915
+  },
+  {
+    "name": "branch_2",
+    "use_tree_spec": true,
+    "branch_factor": 2,
+    "total_tokens": 1270,
+    "total_time": 29.595901250839233,
+    "num_requests": 20,
+    "throughput": 42.91134739355124,
+    "avg_latency": 1.479759693145752
+  },
+  {
+    "name": "branch_3",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "total_tokens": 1274,
+    "total_time": 31.64177918434143,
+    "num_requests": 20,
+    "throughput": 40.26322263921443,
+    "avg_latency": 1.5820533871650695
+  },
+  {
+    "name": "branch_4",
+    "use_tree_spec": true,
+    "branch_factor": 4,
+    "total_tokens": 1280,
+    "total_time": 29.865138053894043,
+    "num_requests": 20,
+    "throughput": 42.85933645075195,
+    "avg_latency": 1.4932193517684937
+  },
+  {
+    "name": "branch_5",
+    "use_tree_spec": true,
+    "branch_factor": 5,
+    "total_tokens": 1280,
+    "total_time": 29.06580138206482,
+    "num_requests": 20,
+    "throughput": 44.03800821366067,
+    "avg_latency": 1.4532529830932617
+  },
+  {
+    "name": "depth_6",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "max_tree_depth": 6,
+    "total_tokens": 1278,
+    "total_time": 30.552935361862183,
+    "num_requests": 20,
+    "throughput": 41.82904146078443,
+    "avg_latency": 1.5276022791862487
+  },
+  {
+    "name": "depth_12",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "max_tree_depth": 12,
+    "total_tokens": 1280,
+    "total_time": 30.29623579978943,
+    "num_requests": 20,
+    "throughput": 42.24947311800684,
+    "avg_latency": 1.5147776007652283
+  },
+  {
+    "name": "depth_18",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "max_tree_depth": 18,
+    "total_tokens": 1280,
+    "total_time": 29.986767292022705,
+    "num_requests": 20,
+    "throughput": 42.685494822928604,
+    "avg_latency": 1.4993028044700623
+  },
+  {
+    "name": "depth_24",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "max_tree_depth": 24,
+    "total_tokens": 1280,
+    "total_time": 30.82770800590515,
+    "num_requests": 20,
+    "throughput": 41.521088747655575,
+    "avg_latency": 1.5413519024848938
+  },
+  {
+    "name": "draft_2",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "num_draft_tokens": 2,
+    "total_tokens": 1270,
+    "total_time": 33.813791275024414,
+    "num_requests": 20,
+    "throughput": 37.55863959975553,
+    "avg_latency": 1.6906431198120118
+  },
+  {
+    "name": "draft_4",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "num_draft_tokens": 4,
+    "total_tokens": 1280,
+    "total_time": 29.358983278274536,
+    "num_requests": 20,
+    "throughput": 43.598240029898854,
+    "avg_latency": 1.4679124712944032
+  },
+  {
+    "name": "draft_6",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "num_draft_tokens": 6,
+    "total_tokens": 1280,
+    "total_time": 29.93754291534424,
+    "num_requests": 20,
+    "throughput": 42.755679837170156,
+    "avg_latency": 1.4968379616737366
+  },
+  {
+    "name": "draft_8",
+    "use_tree_spec": true,
+    "branch_factor": 3,
+    "num_draft_tokens": 8,
+    "total_tokens": 1224,
+    "total_time": 27.239482164382935,
+    "num_requests": 20,
+    "throughput": 44.93477492022388,
+    "avg_latency": 1.361935019493103
+  }
+]

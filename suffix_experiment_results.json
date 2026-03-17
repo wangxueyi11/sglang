@@ -1,0 +1,89 @@
+{
+  "experiment_time": "2026-03-12T19:22:43.260345",
+  "config": {
+    "model": "/wxyworkspace/Qwen2.5-VL-32B-Instruct",
+    "dataset": "/wxyworkspace/2025-12-10_1_Snippet 1_29337771.csv",
+    "num_warmup": 5,
+    "num_eval": 20,
+    "max_prompt_len": 2000,
+    "max_tokens": 200
+  },
+  "results": [
+    {
+      "config": "baseline-no-spec",
+      "use_tree_spec": false,
+      "max_branch_factor": 1,
+      "success": true,
+      "total_requests": 20,
+      "successful_requests": 20,
+      "total_output_tokens": 2987,
+      "total_time": 87.5000307559967,
+      "throughput": 34.13713085804018,
+      "avg_latency": 4.375001537799835,
+      "speculative": {
+        "accept_length": 0,
+        "draft_length": 0,
+        "accept_rate": 0,
+        "avg_accept_length": 0.0
+      },
+      "throughput_improvement": 0.0
+    },
+    {
+      "config": "suffix-single-path",
+      "use_tree_spec": false,
+      "max_branch_factor": 1,
+      "success": true,
+      "total_requests": 20,
+      "successful_requests": 20,
+      "total_output_tokens": 2973,
+      "total_time": 42.81812143325806,
+      "throughput": 69.43321893825043,
+      "avg_latency": 2.140906071662903,
+      "speculative": {
+        "accept_length": 0,
+        "draft_length": 0,
+        "accept_rate": 0,
+        "avg_accept_length": 0.0
+      },
+      "throughput_improvement": 103.39500477351073
+    },
+    {
+      "config": "suffix-tree-branch-3",
+      "use_tree_spec": true,
+      "max_branch_factor": 3,
+      "success": true,
+      "total_requests": 20,
+      "successful_requests": 20,
+      "total_output_tokens": 2981,
+      "total_time": 45.94729804992676,
+      "throughput": 64.87867897609165,
+      "avg_latency": 2.297364902496338,
+      "speculative": {
+        "accept_length": 0,
+        "draft_length": 0,
+        "accept_rate": 0,
+        "avg_accept_length": 0.0
+      },
+      "throughput_improvement": 90.05311033868284
+    },
+    {
+      "config": "suffix-tree-branch-5",
+      "use_tree_spec": true,
+      "max_branch_factor": 5,
+      "success": true,
+      "total_requests": 20,
+      "successful_requests": 20,
+      "total_output_tokens": 3394,
+      "total_time": 56.50676727294922,
+      "throughput": 60.06360235767314,
+      "avg_latency": 2.825338363647461,
+      "speculative": {
+        "accept_length": 0,
+        "draft_length": 0,
+        "accept_rate": 0,
+        "avg_accept_length": 0.0
+      },
+      "throughput_improvement": 75.94800982967378
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "single_branch",
+    "use_tree_spec": false,
+    "branch": 1,
+    "throughput": null
+  },
+  {
+    "name": "multi_branch_3",
+    "use_tree_spec": true,
+    "branch": 3,
+    "throughput": null
+  }
+]

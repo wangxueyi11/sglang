@@ -1,0 +1,26 @@
+[
+  {
+    "config_name": "single_branch",
+    "use_tree_spec": false,
+    "max_branch_factor": 1,
+    "elapsed_time": 117.37356996536255,
+    "log_file": "/wxyworkspace/experiment_logs/single_branch_20260316_054023.log",
+    "return_code": 1,
+    "throughput_tokens_per_sec": null,
+    "avg_generation_time": null,
+    "total_tokens": null,
+    "total_time": null
+  },
+  {
+    "config_name": "multi_branch_3",
+    "use_tree_spec": true,
+    "max_branch_factor": 3,
+    "elapsed_time": 120.7965202331543,
+    "log_file": "/wxyworkspace/experiment_logs/multi_branch_3_20260316_054220.log",
+    "return_code": 1,
+    "throughput_tokens_per_sec": null,
+    "avg_generation_time": null,
+    "total_tokens": null,
+    "total_time": null
+  }
+]

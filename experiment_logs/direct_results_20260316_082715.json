@@ -1,0 +1,22 @@
+[
+  {
+    "name": "single_branch",
+    "use_tree_spec": false,
+    "branch": 1,
+    "total_tokens": 1920,
+    "total_time": 59.87352681159973,
+    "num_requests": 30,
+    "throughput": 32.06759484941556,
+    "avg_latency": 1.9957472801208496
+  },
+  {
+    "name": "multi_branch_3",
+    "use_tree_spec": true,
+    "branch": 3,
+    "total_tokens": 1853,
+    "total_time": 39.39089345932007,
+    "num_requests": 30,
+    "throughput": 47.04132953759066,
+    "avg_latency": 1.3129935264587402
+  }
+]
