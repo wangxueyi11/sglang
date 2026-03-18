@@ -1,8 +1,95 @@
 import logging
+import time
 from typing import List, Optional
 
 import numpy as np
 import torch
+
+# Speculative decoding metrics tracking
+class SpecStats:
+    """Track speculative decoding metrics: avg_accept_length, accept_length_hist, hit_rate."""
+    
+    def __init__(self):
+        self.times = {}
+        self.counts = {}
+        # Speculative metrics
+        self.total_accepted_tokens = 0
+        self.total_draft_tokens = 0
+        self.total_requests = 0
+        self.accept_length_hist = {}  # histogram: accept_length -> count
+        self.step_metrics = []  # per-step metrics for logging
+        
+    def add_timing(self, name, t):
+        """Add timing measurement."""
+        if name not in self.times:
+            self.times[name] = 0
+            self.counts[name] = 0
+        self.times[name] += t
+        self.counts[name] += 1
+    
+    def update_accept_metrics(self, accept_lengths: List[int], num_draft_tokens: int):
+        """Update acceptance metrics after verification."""
+        batch_size = len(accept_lengths)
+        total_accepted = sum(accept_lengths)
+        
+        self.total_accepted_tokens += total_accepted
+        self.total_draft_tokens += batch_size * num_draft_tokens
+        self.total_requests += batch_size
+        
+        # Update histogram
+        for al in accept_lengths:
+            self.accept_length_hist[al] = self.accept_length_hist.get(al, 0) + 1
+    
+    def get_avg_accept_length(self) -> float:
+        """Get average accept length (accepted tokens per request)."""
+        if self.total_requests == 0:
+            return 0.0
+        return self.total_accepted_tokens / self.total_requests
+    
+    def get_hit_rate(self) -> float:
+        """Get acceptance rate (accepted / total draft tokens)."""
+        if self.total_draft_tokens == 0:
+            return 0.0
+        return self.total_accepted_tokens / self.total_draft_tokens
+    
+    def get_step_metrics(self) -> dict:
+        """Get current step metrics and reset counters."""
+        metrics = {
+            "avg_accept_length": self.get_avg_accept_length(),
+            "hit_rate": self.get_hit_rate(),
+            "total_requests": self.total_requests,
+            "accept_length_hist": dict(self.accept_length_hist),
+        }
+        return metrics
+    
+    def report(self, log_level=logging.INFO):
+        """Report all metrics."""
+        if not self.times and self.total_requests == 0:
+            return
+            
+        # Timing breakdown
+        if self.times:
+            total = sum(self.times.values())
+            logger.log(log_level, "[SPEC TIMING] Breakdown:")
+            for name, t in sorted(self.times.items(), key=lambda x: -x[1]):
+                pct = t / total * 100 if total > 0 else 0
+                avg = t / self.counts[name] if self.counts[name] > 0 else 0
+                logger.log(log_level, f"  {name}: {t*1000:.1f}ms ({pct:.1f}%) avg={avg*1000:.2f}ms count={self.counts[name]}")
+        
+        # Speculative metrics
+        if self.total_requests > 0:
+            avg_accept = self.get_avg_accept_length()
+            hit_rate = self.get_hit_rate()
+            logger.log(log_level, f"[SPEC METRICS] avg_accept_length={avg_accept:.2f}, hit_rate={hit_rate:.2%}, "
+                        f"total_requests={self.total_requests}, total_accepted={self.total_accepted_tokens}")
+            
+            # Accept length histogram
+            if self.accept_length_hist:
+                hist_str = ", ".join(f"{k}:{v}" for k, v in sorted(self.accept_length_hist.items()))
+                logger.log(log_level, f"[SPEC HISTOGRAM] accept_length_hist: {{{hist_str}}}")
+
+SPEC_STATS = SpecStats()
+STEP_COUNTER = 0
 from sgl_kernel.speculative import reconstruct_indices_from_tree_mask
 
 from sglang.srt.layers.utils.logprob import add_output_logprobs_for_spec_v1
@@ -155,9 +242,15 @@ class NGRAMWorker:
         tree_mask = self.tree_mask_batch[bs]
         draft_tokens = self.draft_tokens_batch[bs]
 
+        t0 = time.time()
         req_drafts, mask = self._prepare_draft_tokens(batch)
+        t1 = time.time()
+        SPEC_STATS.add_timing("draft_batch_get", t1 - t0)
+        
         tree_mask.copy_(torch.from_numpy(mask), non_blocking=True)
         draft_tokens.copy_(torch.from_numpy(req_drafts), non_blocking=True)
+        t2 = time.time()
+        SPEC_STATS.add_timing("copy_tensors", t2 - t1)
 
         reconstruct_indices_from_tree_mask(
             tree_mask,
@@ -169,6 +262,8 @@ class NGRAMWorker:
             bs,
             self.draft_token_num,
         )
+        t3 = time.time()
+        SPEC_STATS.add_timing("reconstruct_indices", t3 - t2)
 
         # NOTE: QLEN_MASK is faster than FULL_MASK, but requires corresponding changes in flashinfer.
         # Testing shows about 8% performance improvement (the effect is roughly proportional to batch size).
@@ -185,6 +280,8 @@ class NGRAMWorker:
                 ).to(torch.bool)
                 tree_mask.append(req_mask.flatten())
             tree_mask = torch.cat(tree_mask, dim=0)
+        t4 = time.time()
+        SPEC_STATS.add_timing("build_full_mask", t4 - t3)
 
         batch.spec_algorithm = SpeculativeAlgorithm.NGRAM
         batch.forward_mode = ForwardMode.TARGET_VERIFY
@@ -198,6 +295,8 @@ class NGRAMWorker:
             self.draft_token_num,
         )
         batch.spec_info.prepare_for_verify(batch, self.page_size)
+        t5 = time.time()
+        SPEC_STATS.add_timing("prepare_for_verify", t5 - t4)
 
     def _update_ngram_cache(self, batch: ScheduleBatch):
         batch_tokens = []
@@ -214,7 +313,13 @@ class NGRAMWorker:
         self.ngram_cache.batch_put(batch_tokens)
 
     def forward_batch_generation(self, batch: ScheduleBatch) -> GenerationBatchResult:
+        global STEP_COUNTER
+        STEP_COUNTER += 1
+        
+        t0 = time.time()
         self._prepare_for_speculative_decoding(batch)
+        t1 = time.time()
+        SPEC_STATS.add_timing("prepare_draft", t1 - t0)
         model_worker_batch = batch.get_model_worker_batch()
         spec_info = model_worker_batch.spec_info
         num_accepted_tokens = 0
@@ -257,11 +362,23 @@ class NGRAMWorker:
                     # and will be applied to produce wrong results
                     batch.sampling_info.vocab_mask = None
 
+            t2 = time.time()
+            SPEC_STATS.add_timing("target_forward", t2 - t1)
+            
             logits_output, next_token_ids, num_accepted_tokens = verify_input.verify(
                 batch, logits_output, self.page_size, vocab_mask
             )
+            
+            t3 = time.time()
+            SPEC_STATS.add_timing("verify_kernel", t3 - t2)
             # Store accept_lens for per-request metrics
             accept_lens = verify_input.accept_length
+            
+            # Update speculative metrics with accept_lengths
+            if accept_lens is not None:
+                accept_lens_list = accept_lens.cpu().tolist()
+                SPEC_STATS.update_accept_metrics(accept_lens_list, self.draft_token_num)
+            
             if batch.return_logprob:
                 add_output_logprobs_for_spec_v1(batch, verify_input, logits_output)
             self._update_ngram_cache(batch)
@@ -277,6 +394,10 @@ class NGRAMWorker:
                 batch_result.can_run_cuda_graph,
             )
 
+        # 每100步报告一次
+        if STEP_COUNTER % 100 == 0:
+            SPEC_STATS.report()
+        
         return GenerationBatchResult(
             logits_output=logits_output,
             next_token_ids=next_token_ids,

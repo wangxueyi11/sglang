@@ -1992,6 +1992,41 @@ class DumperControlReqOutput(BaseReq):
     error: str = ""
 
 
+@dataclass
+class InjectTrajectoriesReqInput(BaseReq):
+    """Request to inject training trajectories into suffix cache for speculative decoding.
+
+    This is used by VERL training to update the suffix cache with verified training data,
+    enabling better speculation accuracy in subsequent rollouts.
+
+    Attributes:
+        trajectories: List of token sequences (prompt + response tokens)
+        request_ids: Optional list of request IDs for tracking (if None, auto-generated)
+        clear_existing: Whether to clear existing cache before injection (default: False)
+    """
+
+    trajectories: List[List[int]] = field(default_factory=list)
+    request_ids: Optional[List[str]] = None
+    clear_existing: bool = False
+
+
+@dataclass
+class InjectTrajectoriesReqOutput(BaseReq):
+    """Response from injecting trajectories into suffix cache.
+
+    Attributes:
+        success: Whether the injection was successful
+        num_trajectories: Number of trajectories injected
+        cache_stats: Optional statistics about the cache after injection
+        error: Error message if injection failed
+    """
+
+    success: bool
+    num_trajectories: int = 0
+    cache_stats: Optional[Dict[str, Any]] = None
+    error: str = ""
+
+
 def _check_all_req_types():
     """A helper function to check all request types are defined in this file."""
     import inspect

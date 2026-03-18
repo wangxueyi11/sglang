@@ -12,6 +12,8 @@ from sglang.srt.managers.tp_worker import TpModelWorker
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.ngram_worker import NGRAMWorker
 from sglang.srt.speculative.suffix_cache_adapter import SuffixCacheAdapter
+from sglang.srt.utils.common import MultiprocessingSerializer
+from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 
 logger = logging.getLogger(__name__)
 
@@ -110,3 +112,21 @@ class SuffixWorker(NGRAMWorker):
             batch_tokens.append(full_tokens)
 
         self.ngram_cache.batch_put(batch_req_ids, batch_tokens)
+
+    def update_weights_from_tensor(self, recv_req):
+        """
+        Update weights for hybrid engine mode.
+        
+        For speculative decoding workers, we only need to update the target worker's
+        weights since the draft tokens come from the ngram cache, not a separate model.
+        """
+        monkey_patch_torch_reductions()
+        named_tensors = MultiprocessingSerializer.deserialize(
+            recv_req.serialized_named_tensors[self.tp_rank]
+        )
+        # Only update target worker since SuffixWorker doesn't have its own model
+        success, message = self.target_worker.model_runner.update_weights_from_tensor(
+            named_tensors=named_tensors,
+            load_format=recv_req.load_format,
+        )
+        return success, message

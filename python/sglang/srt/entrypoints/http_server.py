@@ -121,6 +121,7 @@ from sglang.srt.managers.io_struct import (
     GenerateReqInput,
     GetWeightsByNameReqInput,
     InitWeightsSendGroupForRemoteInstanceReqInput,
+    InjectTrajectoriesReqInput,
     InitWeightsUpdateGroupReqInput,
     LoadLoRAAdapterFromTensorsReqInput,
     LoadLoRAAdapterReqInput,
@@ -1388,6 +1389,35 @@ async def continue_generation(obj: ContinueGenerationReqInput, request: Request)
     return ORJSONResponse(
         content={"message": "Generation continued successfully.", "status": "ok"},
         status_code=200,
+    )
+
+
+@app.post("/inject_trajectories")
+@auth_level(AuthLevel.ADMIN_OPTIONAL)
+async def inject_trajectories(obj: InjectTrajectoriesReqInput, request: Request):
+    """Inject training trajectories into suffix cache for speculative decoding.
+
+    This endpoint is used by VERL training to share verified trajectories with the suffix cache,
+    enabling better speculation accuracy in subsequent rollouts.
+
+    Args:
+        obj: Request containing:
+            - trajectories: List of token sequences (prompt + response tokens)
+            - request_ids: Optional list of request IDs for tracking
+            - clear_existing: Whether to clear existing cache before injection
+
+    Returns:
+        Response with success status, number of trajectories injected, and cache stats.
+    """
+    result = await _global_state.tokenizer_manager.inject_trajectories(obj, request)
+    return ORJSONResponse(
+        content={
+            "success": result.success,
+            "num_trajectories": result.num_trajectories,
+            "cache_stats": result.cache_stats,
+            "error": result.error,
+        },
+        status_code=200 if result.success else 400,
     )
 
 

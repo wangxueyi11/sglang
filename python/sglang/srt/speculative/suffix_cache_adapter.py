@@ -257,17 +257,24 @@ class DeepTreeBuilder:
             return local_tokens, local_parents, local_score
         
         # 2. 获取 ArcticInference 的主路径作为补充
-        main_draft = self.suffix_cache.speculate(
-            cache_req_id,
-            context,
-            max_spec_tokens=max_tokens,
-            max_spec_factor=self.max_spec_factor,
-            min_token_prob=self.min_token_prob,
-            use_tree_spec=False,
-        )
-        
-        main_tokens = list(main_draft.token_ids) if main_draft.token_ids else []
-        main_score = main_draft.score if hasattr(main_draft, 'score') else 0.0
+        #    注意：如果请求不 active，跳过这一步并使用本地结果
+        main_tokens = []
+        main_score = 0.0
+        try:
+            if cache_req_id in self.suffix_cache.active_requests:
+                main_draft = self.suffix_cache.speculate(
+                    cache_req_id,
+                    context,
+                    max_spec_tokens=max_tokens,
+                    max_spec_factor=self.max_spec_factor,
+                    min_token_prob=self.min_token_prob,
+                    use_tree_spec=False,
+                )
+                main_tokens = list(main_draft.token_ids) if main_draft.token_ids else []
+                main_score = main_draft.score if hasattr(main_draft, 'score') else 0.0
+        except (ValueError, KeyError) as e:
+            # 请求不 active 或其他错误，使用本地结果
+            logger.warning("[SUFFIX] speculate failed for %s: %s, using local cache", cache_req_id, e)
         
         # 3. 决定使用哪个结果
         # 如果本地树有数据但分支不够多，仍然使用（因为可能有更好的匹配）
@@ -376,6 +383,13 @@ class SuffixCacheAdapter:
 
         # Debug toggles (set env e.g. SUFFIX_DEBUG_TREE=1 to dump first batch)
         self.debug_tree_dump_remaining = int(os.environ.get("SUFFIX_DEBUG_TREE", "0"))
+
+        # 统计计数器
+        self.stats_total_steps = 0
+        self.stats_total_draft_generated = 0  # 实际生成的 draft tokens（不含 padding）
+        self.stats_total_draft_padded = 0     # padding 的数量
+        self.stats_total_valid_draft = 0      # 非零的 draft tokens
+        self.stats_last_print_time = 0
 
         # Track state by SGlang request ID (stable identifier)
         # Map: sglang_req_id → (arctic_req_id, last_length)
@@ -546,9 +560,23 @@ class SuffixCacheAdapter:
             draft_ids, draft_parents = self._inject_root_node(
                 draft_ids, draft_parents, context_token
             )
+            
+            # Debug: 打印注入后的树结构
+            if self.use_tree_spec and self.debug_tree_dump_remaining > 0:
+                children_count = {}
+                for i in range(len(draft_parents)):
+                    p = draft_parents[i]
+                    if p >= 0 and p < len(draft_parents):
+                        children_count[p] = children_count.get(p, 0) + 1
+                max_branches_after = max(children_count.values()) if children_count else 0
+                logger.warning(
+                    "[SUFFIX DEBUG AFTER INJECT] tokens=%d, max_branches=%d, parents=%s, context_token=%d",
+                    len(draft_ids), max_branches_after, draft_parents[:20], context_token
+                )
 
             # Pad or truncate to match draft_token_num (includes root node at index 0)
             original_draft_len = len(draft_ids)
+            pad_len = 0
             if original_draft_len < self.draft_token_num:
                 pad_len = self.draft_token_num - original_draft_len
                 draft_ids.extend([0] * pad_len)
@@ -557,6 +585,27 @@ class SuffixCacheAdapter:
                 draft_ids = draft_ids[: self.draft_token_num]
                 draft_parents = draft_parents[: self.draft_token_num]
                 original_draft_len = self.draft_token_num
+            
+            # 统计：计算有效 draft tokens（非零）
+            valid_draft_count = sum(1 for t in draft_ids if t != 0)
+            
+            # 更新全局统计
+            self.stats_total_steps += 1
+            self.stats_total_draft_generated += original_draft_len
+            self.stats_total_draft_padded += pad_len
+            self.stats_total_valid_draft += valid_draft_count
+            
+            # 每100步打印一次统计
+            if self.stats_total_steps % 100 == 0:
+                avg_generated = self.stats_total_draft_generated / self.stats_total_steps
+                avg_padded = self.stats_total_draft_padded / self.stats_total_steps
+                avg_valid = self.stats_total_valid_draft / self.stats_total_steps
+                logger.warning(
+                    "[SUFFIX STATS] step=%d: draft_token_num_config=%d, "
+                    "avg_generated=%.2f, avg_padded=%.2f, avg_valid=%.2f",
+                    self.stats_total_steps, self.draft_token_num,
+                    avg_generated, avg_padded, avg_valid
+                )
 
             start = idx * self.draft_token_num
             end = start + self.draft_token_num

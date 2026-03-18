@@ -509,6 +509,21 @@ class Engine(EngineBase):
         """Launch scheduler processes using multiprocessing.
         Override in subclasses for different backends (e.g. Ray).
         """
+        # Set up CUDA compatibility library path before launching subprocesses
+        # This is needed because multiprocessing.spawn subprocesses inherit
+        # environment variables from parent, and PyTorch's bundled CUDA 12.8
+        # runtime requires newer driver than system's CUDA 12.4 driver supports.
+        _cuda_lib_paths = [
+            "/usr/local/cuda-12.4/targets/x86_64-linux/lib",  # CUDA 12.4 runtime
+            "/usr/local/cuda/compat",  # Driver compatibility libraries
+        ]
+        import os as _os
+        _existing_ld = _os.environ.get("LD_LIBRARY_PATH", "")
+        _paths_to_add = [p for p in _cuda_lib_paths if _os.path.exists(p) and p not in _existing_ld]
+        if _paths_to_add:
+            _new_ld = ":".join(_paths_to_add) + (":" + _existing_ld if _existing_ld else "")
+            _os.environ["LD_LIBRARY_PATH"] = _new_ld
+
         scheduler_procs = []
 
         if server_args.dp_size == 1:

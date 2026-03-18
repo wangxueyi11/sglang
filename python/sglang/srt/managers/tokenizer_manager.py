@@ -60,6 +60,8 @@ from sglang.srt.managers.io_struct import (
     FreezeGCReq,
     GenerateReqInput,
     HealthCheckOutput,
+    InjectTrajectoriesReqInput,
+    InjectTrajectoriesReqOutput,
     LoadLoRAAdapterReqInput,
     OpenSessionReqOutput,
     PauseGenerationReqInput,
@@ -466,6 +468,10 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 (
                     UpdateWeightFromDiskReqOutput,
                     self._handle_update_weights_from_disk_req_output,
+                ),
+                (
+                    InjectTrajectoriesReqOutput,
+                    self._handle_inject_trajectories_req_output,
                 ),
                 (FreezeGCReq, lambda x: None),
                 # For handling case when scheduler skips detokenizer and forwards back to the tokenizer manager, we ignore it.
@@ -1433,6 +1439,43 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
             all_paused_requests = [r.num_paused_requests for r in result]
             return all_success, all_message, all_paused_requests
 
+    async def inject_trajectories(
+        self,
+        obj: InjectTrajectoriesReqInput,
+        request: Optional[fastapi.Request] = None,
+    ) -> InjectTrajectoriesReqOutput:
+        """Inject training trajectories into suffix cache for speculative decoding.
+
+        This is called by VERL training to share verified trajectories with the suffix cache,
+        enabling better speculation accuracy in subsequent rollouts.
+
+        Args:
+            obj: Request containing trajectories to inject
+
+        Returns:
+            InjectTrajectoriesReqOutput with success status and stats
+        """
+        self.auto_create_handle_loop()
+
+        if not self.server_args.speculative_algorithm or self.server_args.speculative_algorithm.upper() != "SUFFIX":
+            return InjectTrajectoriesReqOutput(
+                success=False,
+                num_trajectories=0,
+                error="Suffix speculative decoding is not enabled.",
+            )
+
+        logger.info(
+            f"Injecting {len(obj.trajectories)} trajectories into suffix cache. "
+            f"clear_existing={obj.clear_existing}"
+        )
+
+        # Send request to scheduler
+        self.send_to_scheduler.send_pyobj(obj)
+        self.inject_trajectories_result = asyncio.Future()
+        result = await self.inject_trajectories_result
+
+        return result
+
     def configure_logging(self, obj: ConfigureLoggingReq):
         self.request_logger.configure(
             log_requests=obj.log_requests,
@@ -2192,6 +2235,16 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
             # set future if the all results are received
             if len(self.model_update_tmp) == self.server_args.dp_size:
                 self.model_update_result.set_result(self.model_update_tmp)
+
+    def _handle_inject_trajectories_req_output(self, recv_obj: InjectTrajectoriesReqOutput):
+        """Handle the response from scheduler after injecting trajectories."""
+        if hasattr(self, 'inject_trajectories_result') and self.inject_trajectories_result is not None:
+            self.inject_trajectories_result.set_result(recv_obj)
+        else:
+            logger.warning(
+                f"Received InjectTrajectoriesReqOutput but no pending future found. "
+                f"success={recv_obj.success}, num_trajectories={recv_obj.num_trajectories}"
+            )
 
     async def _validate_and_resolve_lora(
         self, obj: Union[GenerateReqInput, EmbeddingReqInput]

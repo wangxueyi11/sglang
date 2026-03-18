@@ -13,6 +13,32 @@
 # ==============================================================================
 """A scheduler that manages a tensor parallel GPU worker."""
 
+# Set up CUDA compatibility library path before importing torch
+# This is needed for multiprocessing.spawn subprocesses which don't inherit LD_LIBRARY_PATH
+# We need:
+# 1. CUDA 12.4 runtime libraries (libcudart.so) from system CUDA installation
+# 2. Driver compatibility libraries (libcuda.so) from /usr/local/cuda/compat
+# This is required because PyTorch 2.9.1+cu128 bundles CUDA 12.8 runtime,
+# but the system driver only supports CUDA 12.4.
+import os as _os
+_cuda_lib_paths = [
+    "/usr/local/cuda-12.4/targets/x86_64-linux/lib",  # CUDA 12.4 runtime (libcudart.so)
+    "/usr/local/cuda/compat",  # Driver compatibility libraries (libcuda.so)
+]
+_existing_ld = _os.environ.get("LD_LIBRARY_PATH", "")
+# DEBUG: Print current LD_LIBRARY_PATH
+import sys as _sys
+print(f"DEBUG scheduler.py: Initial LD_LIBRARY_PATH = {_existing_ld}", file=_sys.stderr)
+_paths_to_add = [p for p in _cuda_lib_paths if _os.path.exists(p) and p not in _existing_ld]
+if _paths_to_add:
+    _new_ld = ":".join(_paths_to_add) + (":" + _existing_ld if _existing_ld else "")
+    _os.environ["LD_LIBRARY_PATH"] = _new_ld
+    print(f"DEBUG scheduler.py: Updated LD_LIBRARY_PATH = {_new_ld}", file=_sys.stderr)
+else:
+    print(f"DEBUG scheduler.py: No paths to add (all paths already in LD_LIBRARY_PATH or don't exist)", file=_sys.stderr)
+    for p in _cuda_lib_paths:
+        print(f"DEBUG scheduler.py: Path {p} exists={_os.path.exists(p)}, in_ld={p in _existing_ld}", file=_sys.stderr)
+
 import faulthandler
 import logging
 import os
@@ -108,6 +134,8 @@ from sglang.srt.managers.io_struct import (
     InitWeightsSendGroupForRemoteInstanceReqInput,
     InitWeightsSendGroupForRemoteInstanceReqOutput,
     InitWeightsUpdateGroupReqInput,
+    InjectTrajectoriesReqInput,
+    InjectTrajectoriesReqOutput,
     LoadLoRAAdapterFromTensorsReqInput,
     LoadLoRAAdapterFromTensorsReqOutput,
     LoadLoRAAdapterReqInput,
@@ -1179,6 +1207,7 @@ class Scheduler(
                 (PauseGenerationReqInput, self.pause_generation),
                 (ContinueGenerationReqInput, self.continue_generation),
                 (DumperControlReqInput, self.handle_dumper_control),
+                (InjectTrajectoriesReqInput, self.inject_trajectories),
             ]
         )
 
@@ -2636,6 +2665,127 @@ class Scheduler(
     def flush_cache_wrapped(self, recv_req: FlushCacheReqInput):
         success = self.flush_cache()
         return FlushCacheReqOutput(success=success)
+
+    def inject_trajectories(self, recv_req: InjectTrajectoriesReqInput) -> InjectTrajectoriesReqOutput:
+        """Inject training trajectories into suffix cache for better speculation.
+
+        This is called by VERL training loop to share verified trajectories with
+        the suffix speculative decoding cache.
+
+        Args:
+            recv_req: Request containing trajectories to inject
+
+        Returns:
+            InjectTrajectoriesReqOutput with success status and stats
+        """
+        try:
+            # Check if suffix speculative decoding is enabled
+            if not self.spec_algorithm.is_suffix():
+                return InjectTrajectoriesReqOutput(
+                    success=False,
+                    num_trajectories=0,
+                    error="Suffix speculative decoding is not enabled. Cannot inject trajectories.",
+                )
+
+            # Check if draft_worker is available
+            if self.draft_worker is None:
+                return InjectTrajectoriesReqOutput(
+                    success=False,
+                    num_trajectories=0,
+                    error="Draft worker is not initialized.",
+                )
+
+            # Get the suffix cache adapter
+            # SuffixWorker inherits from NGRAMWorker and has ngram_cache attribute
+            if not hasattr(self.draft_worker, 'ngram_cache'):
+                return InjectTrajectoriesReqOutput(
+                    success=False,
+                    num_trajectories=0,
+                    error="Draft worker does not have ngram_cache attribute.",
+                )
+
+            cache_adapter = self.draft_worker.ngram_cache
+
+            # Optionally clear existing cache
+            if recv_req.clear_existing:
+                if hasattr(cache_adapter, 'reset'):
+                    cache_adapter.reset()
+
+            # Inject trajectories
+            num_injected = 0
+            trajectories = recv_req.trajectories
+            request_ids = recv_req.request_ids or [f"train_{i}" for i in range(len(trajectories))]
+
+            for req_id, tokens in zip(request_ids, trajectories):
+                if not tokens:
+                    continue
+
+                # Add to suffix cache
+                if hasattr(cache_adapter, 'suffix_cache'):
+                    suffix_cache = cache_adapter.suffix_cache
+                    # Start a request context if needed
+                    if hasattr(suffix_cache, 'start_request'):
+                        try:
+                            suffix_cache.start_request(req_id, tokens)
+                        except Exception:
+                            pass  # Request might already exist
+
+                    # Add the trajectory to the cache
+                    if hasattr(suffix_cache, 'add_active_response'):
+                        try:
+                            suffix_cache.add_active_response(req_id, tokens)
+                        except Exception:
+                            pass
+
+                # Add to deep tree builder if available
+                if hasattr(cache_adapter, 'deep_tree_builder') and cache_adapter.deep_tree_builder is not None:
+                    cache_adapter.deep_tree_builder.add_sequence(tokens)
+
+                num_injected += 1
+
+            # Collect cache stats
+            cache_stats = {}
+            if hasattr(cache_adapter, 'suffix_cache'):
+                suffix_cache = cache_adapter.suffix_cache
+                if hasattr(suffix_cache, 'active_requests'):
+                    cache_stats['active_requests'] = len(suffix_cache.active_requests)
+                if hasattr(suffix_cache, 'get_cache_size'):
+                    cache_stats['cache_size'] = suffix_cache.get_cache_size()
+
+            if hasattr(cache_adapter, 'deep_tree_builder') and cache_adapter.deep_tree_builder is not None:
+                builder = cache_adapter.deep_tree_builder
+                if hasattr(builder, '_branches'):
+                    cache_stats['ngram_branches'] = len(builder._branches)
+                if hasattr(builder, '_sequences'):
+                    cache_stats['sequences_count'] = len(builder._sequences)
+
+            # Calculate total tokens injected
+            total_tokens = sum(len(t) for t in trajectories if t)
+            avg_length = total_tokens / num_injected if num_injected > 0 else 0
+
+            logger.info(
+                f"[SUFFIX INJECT] Injected {num_injected}/{len(trajectories)} trajectories into suffix cache. "
+                f"total_tokens={total_tokens}, avg_length={avg_length:.1f}, "
+                f"stats={cache_stats}"
+            )
+            print(
+                f"[SUFFIX INJECT] Injected {num_injected} trajectories, "
+                f"total_tokens={total_tokens}, stats={cache_stats}"
+            )
+
+            return InjectTrajectoriesReqOutput(
+                success=True,
+                num_trajectories=num_injected,
+                cache_stats=cache_stats,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to inject trajectories: {e}")
+            return InjectTrajectoriesReqOutput(
+                success=False,
+                num_trajectories=0,
+                error=str(e),
+            )
 
     def clear_hicache_storage_wrapped(self, recv_req: ClearHiCacheReqInput):
         if self.enable_hierarchical_cache:

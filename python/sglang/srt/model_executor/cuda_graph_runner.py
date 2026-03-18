@@ -539,6 +539,7 @@ class CudaGraphRunner:
             model_runner.spec_algorithm.is_eagle()
             or model_runner.spec_algorithm.is_standalone()
             or model_runner.spec_algorithm.is_ngram()
+            or model_runner.spec_algorithm.is_suffix()
         ):
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen")
@@ -695,12 +696,15 @@ class CudaGraphRunner:
             forward_batch.can_run_tbo if self.enable_two_batch_overlap else True
         )
 
-        is_ngram_supported = (
+        is_spec_supported = (
             (
                 forward_batch.batch_size * self.num_tokens_per_bs
                 == forward_batch.input_ids.numel()
             )
-            if self.model_runner.spec_algorithm.is_ngram()
+            if (
+                self.model_runner.spec_algorithm.is_ngram()
+                or self.model_runner.spec_algorithm.is_suffix()
+            )
             else True
         )
 
@@ -709,7 +713,7 @@ class CudaGraphRunner:
             and is_encoder_lens_supported
             and is_tbo_supported
             and capture_hidden_mode_matches
-            and is_ngram_supported
+            and is_spec_supported
         )
 
     def _init_profile_context_and_memory_record(self):
@@ -1181,7 +1185,10 @@ class CudaGraphRunner:
                     seq_lens_cpu=None,
                 )
 
-        elif self.model_runner.spec_algorithm.is_ngram():
+        elif (
+            self.model_runner.spec_algorithm.is_ngram()
+            or self.model_runner.spec_algorithm.is_suffix()
+        ):
             from sglang.srt.speculative.ngram_info import NgramVerifyInput
 
             spec_info = NgramVerifyInput(

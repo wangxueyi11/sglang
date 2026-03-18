@@ -1846,6 +1846,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             self.spec_algorithm.is_eagle()
             or self.spec_algorithm.is_standalone()
             or self.spec_algorithm.is_ngram()
+            or self.spec_algorithm.is_suffix()
         ):
             return not self.is_draft_worker
 
@@ -1880,6 +1881,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             self.spec_algorithm.is_eagle()
             or self.spec_algorithm.is_standalone()
             or self.spec_algorithm.is_ngram()
+            or self.spec_algorithm.is_suffix()
         ):
             if self.is_draft_worker:
                 raise RuntimeError("This should not happen")
@@ -2015,7 +2017,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
                         seq_lens_cpu=None,
                     )
 
-            elif self.spec_algorithm.is_ngram():
+            elif self.spec_algorithm.is_ngram() or self.spec_algorithm.is_suffix():
                 from sglang.srt.speculative.ngram_info import NgramVerifyInput
 
                 spec_info = NgramVerifyInput(
